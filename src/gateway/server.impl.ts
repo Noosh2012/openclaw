@@ -805,6 +805,7 @@ export async function startGatewayServer(
   if (!minimalTestGateway) {
     ({ tickInterval, healthInterval, dedupeCleanup, mediaCleanup } = startGatewayMaintenanceTimers({
       broadcast,
+      broadcastToConnIds,
       nodeSendToAllSubscribed,
       getPresenceVersion,
       getHealthVersion,
@@ -819,6 +820,7 @@ export async function startGatewayServer(
       removeChatRun,
       agentRunSeq,
       nodeSendToSession,
+      getRunRecipients: toolEventRecipients.get,
       ...(typeof cfgAtStart.media?.ttlHours === "number"
         ? { mediaCleanupTtlMs: resolveMediaCleanupTtlMs(cfgAtStart.media.ttlHours) }
         : {}),
@@ -1114,6 +1116,7 @@ export async function startGatewayServer(
     },
     getSessionEventSubscriberConnIds: sessionEventSubscribers.getAll,
     registerToolEventRecipient: toolEventRecipients.add,
+    getRunRecipients: toolEventRecipients.get,
     dedupe,
     wizardSessions,
     findRunningWizard,

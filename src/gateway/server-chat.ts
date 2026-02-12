@@ -506,6 +506,7 @@ export function createAgentEventHandler({
     seq: number,
     text: string,
     delta?: unknown,
+    runId?: string,
   ) => {
     const cleanedText = stripInlineDirectiveTagsForDisplay(text).text;
     const cleanedDelta =
@@ -547,7 +548,12 @@ export function createAgentEventHandler({
         timestamp: now,
       },
     };
-    broadcast("chat", payload, { dropIfSlow: true });
+    const recipients = runId ? toolEventRecipients.get(runId) : undefined;
+    if (recipients && recipients.size > 0) {
+      broadcastToConnIds("chat", payload, recipients, { dropIfSlow: true });
+    } else {
+      broadcast("chat", payload, { dropIfSlow: true });
+    }
     nodeSendToSession(sessionKey, "chat", payload);
   };
 
@@ -618,6 +624,7 @@ export function createAgentEventHandler({
     jobState: "done" | "error",
     error?: unknown,
     stopReason?: string,
+    runId?: string,
   ) => {
     const { text, shouldSuppressSilent } = resolveBufferedChatTextState(clientRunId, sourceRunId);
     // Flush any throttled delta so streaming clients receive the complete text
@@ -628,6 +635,7 @@ export function createAgentEventHandler({
     chatRunState.deltaLastBroadcastLen.delete(clientRunId);
     chatRunState.buffers.delete(clientRunId);
     chatRunState.deltaSentAt.delete(clientRunId);
+    const recipients = runId ? toolEventRecipients.get(runId) : undefined;
     if (jobState === "done") {
       const payload = {
         runId: clientRunId,
@@ -644,7 +652,11 @@ export function createAgentEventHandler({
               }
             : undefined,
       };
-      broadcast("chat", payload);
+      if (recipients && recipients.size > 0) {
+        broadcastToConnIds("chat", payload, recipients);
+      } else {
+        broadcast("chat", payload);
+      }
       nodeSendToSession(sessionKey, "chat", payload);
       return;
     }
@@ -655,7 +667,11 @@ export function createAgentEventHandler({
       state: "error" as const,
       errorMessage: error ? formatForLog(error) : undefined,
     };
-    broadcast("chat", payload);
+    if (recipients && recipients.size > 0) {
+      broadcastToConnIds("chat", payload, recipients);
+    } else {
+      broadcast("chat", payload);
+    }
     nodeSendToSession(sessionKey, "chat", payload);
   };
 
@@ -710,8 +726,9 @@ export function createAgentEventHandler({
               : { ...eventForClients, data };
           })()
         : agentPayload;
+    const runRecipients = toolEventRecipients.get(evt.runId);
     if (last > 0 && evt.seq !== last + 1) {
-      broadcast("agent", {
+      const seqGapPayload = {
         runId: eventRunId,
         stream: "error",
         ts: Date.now(),
@@ -721,7 +738,12 @@ export function createAgentEventHandler({
           expected: last + 1,
           received: evt.seq,
         },
-      });
+      };
+      if (runRecipients && runRecipients.size > 0) {
+        broadcastToConnIds("agent", seqGapPayload, runRecipients);
+      } else {
+        broadcast("agent", seqGapPayload);
+      }
     }
     agentRunSeq.set(evt.runId, evt.seq);
     if (isToolEvent) {
@@ -735,9 +757,8 @@ export function createAgentEventHandler({
       // tool-events capability, regardless of verboseLevel. The verbose
       // setting only controls whether tool details are sent as channel
       // messages to messaging surfaces (Telegram, Discord, etc.).
-      const recipients = toolEventRecipients.get(evt.runId);
-      if (recipients && recipients.size > 0) {
-        broadcastToConnIds("agent", toolPayload, recipients);
+      if (runRecipients && runRecipients.size > 0) {
+        broadcastToConnIds("agent", toolPayload, runRecipients);
       }
       // Session subscribers power operator UIs that attach to an existing
       // in-flight session after the run has already started. Those clients do
@@ -751,7 +772,11 @@ export function createAgentEventHandler({
         }
       }
     } else {
-      broadcast("agent", agentPayload);
+      if (runRecipients && runRecipients.size > 0) {
+        broadcastToConnIds("agent", agentPayload, runRecipients);
+      } else {
+        broadcast("agent", agentPayload);
+      }
     }
 
     const lifecyclePhase =
@@ -764,7 +789,7 @@ export function createAgentEventHandler({
         nodeSendToSession(sessionKey, "agent", isToolEvent ? toolPayload : agentPayload);
       }
       if (!isAborted && evt.stream === "assistant" && typeof evt.data?.text === "string") {
-        emitChatDelta(sessionKey, clientRunId, evt.runId, evt.seq, evt.data.text, evt.data.delta);
+        emitChatDelta(sessionKey, clientRunId, evt.runId, evt.seq, evt.data.text, evt.data.delta, evt.runId);
       } else if (!isAborted && (lifecyclePhase === "end" || lifecyclePhase === "error")) {
         const evtStopReason =
           typeof evt.data?.stopReason === "string" ? evt.data.stopReason : undefined;
@@ -782,6 +807,7 @@ export function createAgentEventHandler({
             lifecyclePhase === "error" ? "error" : "done",
             evt.data?.error,
             evtStopReason,
+            evt.runId,
           );
         } else {
           emitChatFinal(
@@ -792,6 +818,7 @@ export function createAgentEventHandler({
             lifecyclePhase === "error" ? "error" : "done",
             evt.data?.error,
             evtStopReason,
+            evt.runId,
           );
         }
       } else if (isAborted && (lifecyclePhase === "end" || lifecyclePhase === "error")) {

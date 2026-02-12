@@ -21,6 +21,12 @@ export function startGatewayMaintenanceTimers(params: {
       stateVersion?: { presence?: number; health?: number };
     },
   ) => void;
+  broadcastToConnIds?: (
+    event: string,
+    payload: unknown,
+    connIds: ReadonlySet<string>,
+    opts?: { dropIfSlow?: boolean },
+  ) => void;
   nodeSendToAllSubscribed: (event: string, payload: unknown) => void;
   getPresenceVersion: () => number;
   getHealthVersion: () => number;
@@ -40,6 +46,7 @@ export function startGatewayMaintenanceTimers(params: {
   agentRunSeq: Map<string, number>;
   nodeSendToSession: (sessionKey: string, event: string, payload: unknown) => void;
   mediaCleanupTtlMs?: number;
+  getRunRecipients?: (runId: string) => ReadonlySet<string> | undefined;
 }): {
   tickInterval: ReturnType<typeof setInterval>;
   healthInterval: ReturnType<typeof setInterval>;
@@ -118,6 +125,8 @@ export function startGatewayMaintenanceTimers(params: {
           agentRunSeq: params.agentRunSeq,
           broadcast: params.broadcast,
           nodeSendToSession: params.nodeSendToSession,
+          broadcastToConnIds: params.broadcastToConnIds,
+          getRunRecipients: params.getRunRecipients,
         },
         { runId, sessionKey: entry.sessionKey, stopReason: "timeout" },
       );
