@@ -139,6 +139,7 @@ export async function runAgentTurnWithFallback(params: {
   let fallbackProvider = params.followupRun.run.provider;
   let fallbackModel = params.followupRun.run.model;
   let fallbackAttempts: RuntimeFallbackAttempt[] = [];
+  let agentCallStartMs = Date.now();
   let didResetAfterCompactionFailure = false;
   let didRetryTransientHttpError = false;
   let bootstrapPromptWarningSignaturesSeen = resolveBootstrapWarningSignaturesSeen(
@@ -340,6 +341,8 @@ export async function runAgentTurnWithFallback(params: {
           return (async () => {
             let attemptCompactionCount = 0;
             try {
+              defaultRuntime.info?.(`[agent-llm] runEmbeddedPiAgent starting for session`);
+              agentCallStartMs = Date.now();
               const result = await runEmbeddedPiAgent({
                 ...embeddedContext,
                 allowGatewaySubagentBinding: true,
@@ -512,6 +515,8 @@ export async function runAgentTurnWithFallback(params: {
         },
       });
       runResult = fallbackResult.result;
+      const agentCallDurationMs = Date.now() - agentCallStartMs;
+      defaultRuntime.info?.(`[agent-llm] runEmbeddedPiAgent completed: duration=${agentCallDurationMs}ms payloads=${runResult.payloads?.length ?? 0} hasError=${!!runResult.meta?.error} errorKind=${runResult.meta?.error?.kind ?? "none"}`);
       fallbackProvider = fallbackResult.provider;
       fallbackModel = fallbackResult.model;
       fallbackAttempts = Array.isArray(fallbackResult.attempts)
@@ -649,7 +654,8 @@ export async function runAgentTurnWithFallback(params: {
         continue;
       }
 
-      defaultRuntime.error(`Embedded agent failed before reply: ${message}`);
+      const catchDurationMs = Date.now() - agentCallStartMs;
+      defaultRuntime.error(`[agent-llm] Embedded agent FAILED: duration=${catchDurationMs}ms error=${message}`);
       const safeMessage = isTransientHttp
         ? sanitizeUserFacingText(message, { errorContext: true })
         : message;

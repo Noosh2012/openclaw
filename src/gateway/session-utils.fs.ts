@@ -115,6 +115,11 @@ export function readSessionMessages(
     try {
       const parsed = JSON.parse(line);
       if (parsed?.message) {
+        // Skip delivery-mirror audit entries — internal outbound tracking, not real LLM replies.
+        const m = parsed.message;
+        if (m.role === "assistant" && m.model === "delivery-mirror" && m.provider === "openclaw") {
+          continue;
+        }
         messageSeq += 1;
         messages.push(
           attachOpenClawTranscriptMeta(parsed.message, {

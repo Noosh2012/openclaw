@@ -924,6 +924,11 @@ export async function runEmbeddedPiAgent(
           const prompt =
             provider === "anthropic" ? scrubAnthropicRefusalMagic(params.prompt) : params.prompt;
 
+          const attemptStartMs = Date.now();
+          log.info(
+            `[agent-llm] Starting LLM attempt: provider=${provider} model=${modelId} sessionKey=${redactedSessionKey} runId=${params.runId} iteration=${runLoopIterations}`,
+          );
+
           const attempt = await runEmbeddedAttempt({
             sessionId: params.sessionId,
             sessionKey: params.sessionKey,
@@ -1021,6 +1026,10 @@ export async function runEmbeddedPiAgent(
               : bootstrapPromptWarningSignaturesSeen);
           const lastAssistantUsage = normalizeUsage(lastAssistant?.usage as UsageLike);
           const attemptUsage = attempt.attemptUsage ?? lastAssistantUsage;
+          const attemptDurationMs = Date.now() - attemptStartMs;
+          log.info(
+            `[agent-llm] LLM attempt completed: duration=${attemptDurationMs}ms aborted=${aborted} timedOut=${timedOut} promptError=${!!promptError} prompt_tokens=${attemptUsage?.prompt ?? "?"} completion_tokens=${attemptUsage?.completion ?? "?"} total_tokens=${attemptUsage?.total ?? "?"} compactions=${attempt.compactionCount ?? 0} sessionKey=${redactedSessionKey}`,
+          );
           mergeUsageIntoAccumulator(usageAccumulator, attemptUsage);
           // Keep prompt size from the latest model call so session totalTokens
           // reflects current context usage, not accumulated tool-loop usage.
