@@ -1,0 +1,42 @@
+name: Deploy to Noosh QA2
+
+on:
+  push:
+    branches: [custom-qa]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - '.agents/**'
+      - 'skills/**'
+
+  workflow_dispatch:
+
+env:
+  DEPLOY_USER: paul
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.OPENCLAW_QA2_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.OPENCLAW_QA2_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Pull latest image and restart
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ env.DEPLOY_USER }}@${{ secrets.OPENCLAW_QA2_HOST }} \
+            "cd ~/openclaw-deploy && \
+             docker compose -f docker-compose.remote.yml pull openclaw && \
+             docker compose -f docker-compose.remote.yml up -d openclaw"
+
+      - name: Health check
+        run: |
+          sleep 15
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no \
+            ${{ env.DEPLOY_USER }}@${{ secrets.OPENCLAW_QA2_HOST }} \
+            "docker compose -f ~/openclaw-deploy/docker-compose.remote.yml logs openclaw --tail=5 2>&1 | grep -q 'listening on ws://' && echo '✓ OpenClaw Gateway running' || echo '✗ OpenClaw Gateway not ready yet'"
