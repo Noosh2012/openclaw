@@ -7,6 +7,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import type * as LanceDB from "@lancedb/lancedb";
 import { Type } from "@sinclair/typebox";
 import OpenAI from "openai";
@@ -31,6 +32,7 @@ type MemoryEntry = {
   importance: number;
   category: MemoryCategory;
   createdAt: number;
+  userId?: string;
 };
 
 type MemorySearchResult = {
@@ -73,7 +75,22 @@ class MemoryDB {
 
     if (tables.includes(TABLE_NAME)) {
       this.table = await this.db.openTable(TABLE_NAME);
-    } else {
+      // Migrate: if table lacks userId column, drop and recreate
+      try {
+        const schema = await this.table.schema;
+        const hasUserId = schema.fields.some((f: { name: string }) => f.name === "userId");
+        if (!hasUserId) {
+          await this.db!.dropTable(TABLE_NAME);
+          this.table = null;
+          // Fall through to create below
+        }
+      } catch {
+        // Schema check failed, try to recreate
+        try { await this.db!.dropTable(TABLE_NAME); } catch {}
+        this.table = null;
+      }
+    }
+    if (!this.table) {
       this.table = await this.db.createTable(TABLE_NAME, [
         {
           id: "__schema__",
@@ -82,34 +99,35 @@ class MemoryDB {
           importance: 0,
           category: "other",
           createdAt: 0,
+          userId: "global",
         },
       ]);
       await this.table.delete('id = "__schema__"');
     }
   }
 
-  async store(entry: Omit<MemoryEntry, "id" | "createdAt">): Promise<MemoryEntry> {
+  async store(entry: Omit<MemoryEntry, "id" | "createdAt">, userId?: string): Promise<MemoryEntry> {
     await this.ensureInitialized();
 
     const fullEntry: MemoryEntry = {
       ...entry,
       id: randomUUID(),
       createdAt: Date.now(),
+      userId: userId || "global",
     };
 
     await this.table!.add([fullEntry]);
     return fullEntry;
   }
 
-  async search(vector: number[], limit = 5, minScore = 0.5): Promise<MemorySearchResult[]> {
+  async search(vector: number[], limit = 5, minScore = 0.5, userId?: string): Promise<MemorySearchResult[]> {
     await this.ensureInitialized();
 
-    const results = await this.table!.vectorSearch(vector).limit(limit).toArray();
+    const results = await this.table!.vectorSearch(vector).limit(limit * 2).toArray();
 
     // LanceDB uses L2 distance by default; convert to similarity score
     const mapped = results.map((row) => {
       const distance = row._distance ?? 0;
-      // Use inverse for a 0-1 range: sim = 1 / (1 + d)
       const score = 1 / (1 + distance);
       return {
         entry: {
@@ -119,9 +137,16 @@ class MemoryDB {
           importance: row.importance as number,
           category: row.category as MemoryEntry["category"],
           createdAt: row.createdAt as number,
+          userId: row.userId as string | undefined,
         },
         score,
       };
+    })
+    // Filter by userId: show user's own memories + global memories
+    .filter(r => {
+      if (!userId) return true;
+      const memUserId = r.entry.userId;
+      return !memUserId || memUserId === "global" || memUserId === userId;
     });
 
     return mapped.filter((r) => r.score >= minScore);
@@ -286,7 +311,17 @@ export default definePluginEntry({
 
   register(api: OpenClawPluginApi) {
     const cfg = memoryConfigSchema.parse(api.pluginConfig);
-    const resolvedDbPath = api.resolvePath(cfg.dbPath!);
+    let resolvedDbPath = api.resolvePath(cfg.dbPath!);
+
+    // Sandbox detection: if configured path doesn't exist but /workspace does,
+    // use workspace-relative path. This ensures sandbox agents access the same
+    // LanceDB as the user's workspace (mounted from host volume).
+    const SANDBOX_WORKSPACE = "/workspace";
+    if (!fs.existsSync(resolvedDbPath) && fs.existsSync(SANDBOX_WORKSPACE)) {
+      resolvedDbPath = `${SANDBOX_WORKSPACE}/memory/lancedb`;
+      api.logger.info(`memory-lancedb: sandbox detected, using workspace path: ${resolvedDbPath}`);
+    }
+
     const { model, dimensions, apiKey, baseUrl } = cfg.embedding;
 
     const vectorDim = dimensions ?? vectorDimsForModel(model);
@@ -300,7 +335,7 @@ export default definePluginEntry({
     // ========================================================================
 
     api.registerTool(
-      {
+      (ctx: { sessionKey?: string }) => ({
         name: "memory_recall",
         label: "Memory Recall",
         description:
@@ -309,11 +344,13 @@ export default definePluginEntry({
           query: Type.String({ description: "Search query" }),
           limit: Type.Optional(Type.Number({ description: "Max results (default: 5)" })),
         }),
-        async execute(_toolCallId, params) {
+        async execute(_toolCallId: string, params: unknown) {
           const { query, limit = 5 } = params as { query: string; limit?: number };
+          // Extract userId from sessionKey (format: agent:u{userId}:{sessionId})
+          const userId = ctx.sessionKey?.match(/^agent:(u\d+):/)?.[1];
 
           const vector = await embeddings.embed(query);
-          const results = await db.search(vector, limit, 0.1);
+          const results = await db.search(vector, limit, 0.1, userId);
 
           if (results.length === 0) {
             return {
@@ -343,12 +380,12 @@ export default definePluginEntry({
             details: { count: results.length, memories: sanitizedResults },
           };
         },
-      },
+      }),
       { name: "memory_recall" },
     );
 
     api.registerTool(
-      {
+      (ctx: { sessionKey?: string }) => ({
         name: "memory_store",
         label: "Memory Store",
         description:
@@ -363,7 +400,7 @@ export default definePluginEntry({
             }),
           ),
         }),
-        async execute(_toolCallId, params) {
+        async execute(_toolCallId: string, params: unknown) {
           const {
             text,
             importance = 0.7,
@@ -373,12 +410,13 @@ export default definePluginEntry({
             importance?: number;
             category?: MemoryEntry["category"];
           };
+          const userId = ctx.sessionKey?.match(/^agent:(u\d+):/)?.[1];
 
           const vector = await embeddings.embed(text);
 
-          // Check for duplicates
-          const existing = await db.search(vector, 1, 0.95);
-          if (existing.length > 0) {
+          // Check for duplicates (scoped to this user)
+          const existing = await db.search(vector, 1, 0.95, userId);
+          if (existing.length > 0 && existing[0].entry.userId === (userId || "global")) {
             return {
               content: [
                 {
@@ -399,14 +437,14 @@ export default definePluginEntry({
             vector,
             importance,
             category,
-          });
+          }, userId);
 
           return {
             content: [{ type: "text", text: `Stored: "${text.slice(0, 100)}..."` }],
             details: { action: "created", id: entry.id },
           };
         },
-      },
+      }),
       { name: "memory_store" },
     );
 
@@ -534,13 +572,14 @@ export default definePluginEntry({
     // Auto-recall: inject relevant memories before agent starts
     if (cfg.autoRecall) {
       api.on("before_agent_start", async (event) => {
+        const userId = event.sessionKey?.match(/^agent:(u\d+):/)?.[1];
         if (!event.prompt || event.prompt.length < 5) {
           return;
         }
 
         try {
           const vector = await embeddings.embed(event.prompt);
-          const results = await db.search(vector, 3, 0.3);
+          const results = await db.search(vector, 3, 0.3, userId);
 
           if (results.length === 0) {
             return;
@@ -565,6 +604,7 @@ export default definePluginEntry({
         if (!event.success || !event.messages || event.messages.length === 0) {
           return;
         }
+        const userId = event.sessionKey?.match(/^agent:(u\d+):/)?.[1];
 
         try {
           // Extract text content from messages (handling unknown[] type)
@@ -622,7 +662,7 @@ export default definePluginEntry({
             const vector = await embeddings.embed(text);
 
             // Check for duplicates (high similarity threshold)
-            const existing = await db.search(vector, 1, 0.95);
+            const existing = await db.search(vector, 1, 0.95, userId);
             if (existing.length > 0) {
               continue;
             }
@@ -632,7 +672,7 @@ export default definePluginEntry({
               vector,
               importance: 0.7,
               category,
-            });
+            }, userId);
             stored++;
           }
 
