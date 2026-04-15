@@ -709,6 +709,15 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
       if (shouldActivate) {
         activatePluginRegistry(cached.registry, cacheKey);
       }
+      // [noosh-fork] See companion observability block at end of this function.
+      // On cache hit we only log plugin IDs (hook counts were logged when the
+      // registry was first built).
+      if (shouldActivate && cached.registry.plugins.length > 0) {
+        const ids = cached.registry.plugins.map((p) => p.id).join(", ");
+        logger.info?.(
+          `[plugins] cache hit: ${cached.registry.plugins.length} plugin(s) (subagentMode=${runtimeSubagentMode}): ${ids}`,
+        );
+      }
       return cached.registry;
     }
   }
@@ -1274,6 +1283,18 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
   }
   if (shouldActivate) {
     activatePluginRegistry(registry, cacheKey);
+  }
+  // [noosh-fork] Observability: log per-plugin hook counts after a fresh load so
+  // silent "plugin loaded but registered nothing" cases are visible. Helps diagnose
+  // scoped/subagent loads where one plugin goes missing (seen with noosh plugin
+  // after `docker compose up --force-recreate`; fixed by `docker restart`).
+  if (shouldActivate && registry.plugins.length > 0) {
+    const summary = registry.plugins
+      .map((p) => `${p.id}(hooks=${p.hookCount ?? 0})`)
+      .join(", ");
+    logger.info?.(
+      `[plugins] loaded ${registry.plugins.length} plugin(s) (subagentMode=${runtimeSubagentMode}): ${summary}`,
+    );
   }
   return registry;
 }
