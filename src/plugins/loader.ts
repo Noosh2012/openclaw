@@ -682,6 +682,12 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
   const includeSetupOnlyChannelPlugins = options.includeSetupOnlyChannelPlugins === true;
   const preferSetupRuntimeForChannelPlugins = options.preferSetupRuntimeForChannelPlugins === true;
   const shouldActivate = options.activate !== false;
+  const runtimeSubagentMode: "default" | "explicit" | "gateway-bindable" =
+    options.runtimeOptions?.allowGatewaySubagentBinding === true
+      ? "gateway-bindable"
+      : options.runtimeOptions?.subagent
+        ? "explicit"
+        : "default";
   // NOTE: `activate` is intentionally excluded from the cache key. All non-activating
   // (snapshot) callers pass `cache: false` via loadOnboardingPluginRegistry(), so they
   // never read from or write to the cache. Including `activate` here would be misleading
@@ -694,12 +700,7 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
     onlyPluginIds,
     includeSetupOnlyChannelPlugins,
     preferSetupRuntimeForChannelPlugins,
-    runtimeSubagentMode:
-      options.runtimeOptions?.allowGatewaySubagentBinding === true
-        ? "gateway-bindable"
-        : options.runtimeOptions?.subagent
-          ? "explicit"
-          : "default",
+    runtimeSubagentMode,
   });
   const cacheEnabled = options.cache !== false;
   if (cacheEnabled) {

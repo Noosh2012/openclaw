@@ -1001,6 +1001,8 @@ export function attachGatewayWsMessageHandler(params: {
           canvasHostUrl,
           canvasCapability,
           canvasCapabilityExpiresAtMs,
+          proxyUser:
+            authMethod === "trusted-proxy" && authResult.ok ? authResult.user : undefined,
         };
         setSocketMaxPayload(socket, MAX_PAYLOAD_BYTES);
         setClient(nextClient);

@@ -21,6 +21,14 @@ export type GatewayClient = {
   canvasHostUrl?: string;
   canvasCapability?: string;
   canvasCapabilityExpiresAtMs?: number;
+  /**
+   * Identity vouched for by a trusted reverse proxy (see
+   * `gateway.auth.trustedProxy.userHeader`). Only populated when the
+   * connection was accepted via `trusted-proxy` auth. Plugins MUST prefer
+   * this over anything parsed out of client-controlled strings
+   * (e.g. sessionKey) when deciding which user owns a request.
+   */
+  proxyUser?: string;
   /** Internal-only auth context that cannot be supplied through gateway RPC payloads. */
   internal?: {
     allowModelOverride?: boolean;
